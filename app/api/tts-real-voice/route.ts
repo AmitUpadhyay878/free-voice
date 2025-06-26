@@ -1,5 +1,41 @@
 import { type NextRequest, NextResponse } from "next/server"
 
+function sanitizeTextForTTS(text: string): string {
+  if (!text || typeof text !== "string") {
+    return ""
+  }
+
+  return (
+    text
+      // Remove markdown formatting
+      .replace(/\*\*(.*?)\*\*/g, "$1") // Remove **bold**
+      .replace(/\*(.*?)\*/g, "$1") // Remove *italic*
+      .replace(/_(.*?)_/g, "$1") // Remove _underline_
+      .replace(/`(.*?)`/g, "$1") // Remove `code`
+      .replace(/#{1,6}\s/g, "") // Remove # headers
+      .replace(/\[(.*?)\]$$.*?$$/g, "$1") // Remove [links](url)
+
+      // Clean up special characters
+      .replace(/[₹$€£¥]/g, "") // Remove currency symbols
+      .replace(/[—–]/g, "-") // Replace em/en dashes with hyphens
+      .replace(/[""'']/g, '"') // Replace smart quotes
+      .replace(/…/g, "...") // Replace ellipsis
+
+      // Handle line breaks and spacing
+      .replace(/\\n/g, " ") // Replace \n with space
+      .replace(/\n/g, " ") // Replace actual newlines with space
+      .replace(/\r/g, " ") // Replace carriage returns
+      .replace(/\t/g, " ") // Replace tabs with space
+
+      // Clean up multiple spaces and trim
+      .replace(/\s+/g, " ") // Replace multiple spaces with single space
+      .trim()
+
+      // Limit length for TTS services
+      .substring(0, 1000)
+  ) // Most TTS services have limits
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -10,7 +46,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Generate REAL speech using multiple services
-    const audioBuffer = await generateActualSpeech(text, { voice, rate })
+    const sanitizedText = sanitizeTextForTTS(text)
+    if (!sanitizedText) {
+      return NextResponse.json({ error: "No valid text after sanitization" }, { status: 400 })
+    }
+    const audioBuffer = await generateActualSpeech(sanitizedText, { voice, rate })
 
     return new NextResponse(audioBuffer, {
       status: 200,
