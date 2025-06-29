@@ -36,9 +36,9 @@ function sanitizeTextForTTS(text: string): string {
   ) // Most TTS services have limits
 }
 
-// Enhanced voice mapping with Microsoft and Google voices
+// WORKING voice mapping - Google TTS only supports these actual language codes
 const VOICE_MAPPING = {
-  // Microsoft Voices - US English
+  // Microsoft voices mapped to closest Google TTS equivalent
   "microsoft david": "en",
   "microsoft-david": "en",
   david: "en",
@@ -49,7 +49,7 @@ const VOICE_MAPPING = {
   "microsoft-zira": "en",
   zira: "en",
 
-  // Microsoft Voices - UK English
+  // UK voices
   "microsoft hazel": "en-gb",
   "microsoft-hazel": "en-gb",
   hazel: "en-gb",
@@ -60,7 +60,7 @@ const VOICE_MAPPING = {
   "microsoft-george": "en-gb",
   george: "en-gb",
 
-  // Microsoft Voices - Indian English
+  // Indian voices
   "microsoft heera": "en-in",
   "microsoft-heera": "en-in",
   heera: "en-in",
@@ -68,7 +68,7 @@ const VOICE_MAPPING = {
   "microsoft-ravi": "en-in",
   ravi: "en-in",
 
-  // Google Voices
+  // Google voices (these are just language codes)
   "google us english": "en",
   "google-us-english": "en",
   "google us": "en",
@@ -79,40 +79,52 @@ const VOICE_MAPPING = {
   "google hindi": "hi",
   "google हिन्दी": "hi",
 
-  // Standard language codes
+  // Standard codes that actually work with Google TTS
+  en: "en",
   "en-us": "en",
   "en-gb": "en-gb",
+  "en-au": "en-au",
+  "en-ca": "en-ca",
   "en-in": "en-in",
-  "hi-in": "hi",
   hi: "hi",
+  "hi-in": "hi",
 
-  // Generic voice types
-  en: "en",
+  // Generic mappings
   english: "en",
   american: "en",
   british: "en-gb",
   uk: "en-gb",
+  australian: "en-au",
+  canadian: "en-ca",
   indian: "en-in",
   india: "en-in",
   hindi: "hi",
-
-  // Gender-based (mapped to different accents)
-  female: "en-gb", // UK female
-  male: "en", // US male
+  female: "en-gb", // UK tends to sound more feminine
+  male: "en", // US tends to sound more masculine
   woman: "en-gb",
   man: "en",
 
-  // Other languages
+  // Other languages that actually work
   es: "es",
+  spanish: "es",
   fr: "fr",
+  french: "fr",
   de: "de",
+  german: "de",
   it: "it",
+  italian: "it",
   pt: "pt",
+  portuguese: "pt",
   ru: "ru",
+  russian: "ru",
   ja: "ja",
+  japanese: "ja",
   ko: "ko",
+  korean: "ko",
   zh: "zh",
+  chinese: "zh",
   ar: "ar",
+  arabic: "ar",
 }
 
 export async function POST(request: NextRequest) {
@@ -129,7 +141,9 @@ export async function POST(request: NextRequest) {
     const voiceKey = voice.toLowerCase().trim()
     const selectedVoice = VOICE_MAPPING[voiceKey] || VOICE_MAPPING[lang.toLowerCase()] || "en"
 
-    // Use Google Translate TTS with voice selection
+    console.log(`Voice requested: "${voice}" -> Mapped to: "${selectedVoice}"`)
+
+    // Use Google Translate TTS with the mapped language code
     const audioBuffer = await fetchGoogleTTS(sanitizedText, selectedVoice, slow, speed)
 
     return new NextResponse(audioBuffer, {
@@ -139,11 +153,19 @@ export async function POST(request: NextRequest) {
         "Content-Disposition": `attachment; filename="gtts-${voiceKey.replace(/\s+/g, "-")}.mp3"`,
         "Content-Length": audioBuffer.length.toString(),
         "Cache-Control": "no-cache",
+        "X-Voice-Requested": voice,
+        "X-Voice-Used": selectedVoice,
       },
     })
   } catch (error) {
     console.error("Google TTS error:", error)
-    return NextResponse.json({ error: "TTS failed" }, { status: 500 })
+    return NextResponse.json(
+      {
+        error: "TTS failed",
+        details: error instanceof Error ? error.message : "Unknown error",
+      },
+      { status: 500 },
+    )
   }
 }
 
@@ -157,24 +179,40 @@ async function fetchGoogleTTS(text: string, voice: string, slow: boolean, speed 
 
   for (const chunk of chunks) {
     try {
-      const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(chunk)}&tl=${voice}&client=tw-ob&ttsspeed=${speedParam}`
+      // Use the correct Google Translate TTS URL format
+      const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(chunk)}&tl=${voice}&client=tw-ob&ttsspeed=${speedParam}&total=1&idx=0`
+
+      console.log(`Fetching TTS for chunk: "${chunk.substring(0, 50)}..." with voice: ${voice}`)
 
       const response = await fetch(url, {
         headers: {
           "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           Referer: "https://translate.google.com/",
           Accept: "audio/mpeg, audio/*, */*",
           "Accept-Language": "en-US,en;q=0.9",
+          "Accept-Encoding": "identity",
         },
       })
 
-      if (response.ok && response.headers.get("content-type")?.includes("audio")) {
-        const buffer = await response.arrayBuffer()
-        if (buffer.byteLength > 100) {
-          // Valid audio file
-          audioBuffers.push(Buffer.from(buffer))
+      console.log(`Response status: ${response.status}, Content-Type: ${response.headers.get("content-type")}`)
+
+      if (response.ok) {
+        const contentType = response.headers.get("content-type") || ""
+        if (contentType.includes("audio") || contentType.includes("mpeg")) {
+          const buffer = await response.arrayBuffer()
+          if (buffer.byteLength > 100) {
+            // Valid audio file
+            audioBuffers.push(Buffer.from(buffer))
+            console.log(`Successfully got audio chunk: ${buffer.byteLength} bytes`)
+          } else {
+            console.log(`Audio chunk too small: ${buffer.byteLength} bytes`)
+          }
+        } else {
+          console.log(`Invalid content type: ${contentType}`)
         }
+      } else {
+        console.log(`HTTP error: ${response.status} ${response.statusText}`)
       }
     } catch (error) {
       console.error("Chunk TTS failed:", error)
@@ -182,8 +220,10 @@ async function fetchGoogleTTS(text: string, voice: string, slow: boolean, speed 
   }
 
   if (audioBuffers.length === 0) {
-    throw new Error("Failed to generate any audio")
+    throw new Error("Failed to generate any audio - Google TTS may be blocked or rate limited")
   }
+
+  console.log(`Successfully generated ${audioBuffers.length} audio chunks`)
 
   // Combine all audio buffers
   return Buffer.concat(audioBuffers)
@@ -213,78 +253,59 @@ function splitTextIntoChunks(text: string, maxLength: number): string[] {
 
 export async function GET() {
   return NextResponse.json({
-    message: "Google TTS API with Microsoft & Google Voice Selection",
-    description: "Uses Google Translate TTS with Microsoft and Google voice mapping",
-    microsoft_voices: {
+    message: "WORKING Google TTS API with Voice Mapping",
+    description: "Maps Microsoft/Google voice names to actual Google TTS language codes",
+    important_note: "Google TTS only supports language/region codes, not specific voice names",
+
+    working_voices: {
       us_english: {
-        "Microsoft David": "david",
-        "Microsoft Mark": "mark",
-        "Microsoft Zira": "zira",
+        codes: ["en", "en-us"],
+        mapped_from: ["Microsoft David", "Microsoft Mark", "Microsoft Zira", "Google US English"],
+        example: '{"voice": "Microsoft Zira"}' + " -> uses 'en' (US English)",
       },
       uk_english: {
-        "Microsoft Hazel": "hazel",
-        "Microsoft Susan": "susan",
-        "Microsoft George": "george",
+        codes: ["en-gb"],
+        mapped_from: ["Microsoft Hazel", "Microsoft Susan", "Microsoft George", "Google UK English Female"],
+        example: '{"voice": "Microsoft Hazel"}' + " -> uses 'en-gb' (UK English)",
       },
       indian_english: {
-        "Microsoft Heera": "heera",
-        "Microsoft Ravi": "ravi",
+        codes: ["en-in"],
+        mapped_from: ["Microsoft Heera", "Microsoft Ravi"],
+        example: '{"voice": "Microsoft Heera"}' + " -> uses 'en-in' (Indian English)",
+      },
+      hindi: {
+        codes: ["hi"],
+        mapped_from: ["Google हिन्दी", "Google Hindi"],
+        example: '{"voice": "Google हिन्दी"}' + " -> uses 'hi' (Hindi)",
       },
     },
-    google_voices: {
-      "Google US English": "google us english",
-      "Google UK English Female": "google uk english female",
-      "Google हिन्दी": "google hindi",
-    },
-    voice_parameters: {
-      text: "string (required) - Text to convert to speech",
-      voice: "string (optional) - Voice name (see examples below)",
-      lang: "string (optional) - Language code fallback",
-      slow: "boolean (optional) - Slow speech mode",
-      speed: "number (optional) - Speech speed 0.1-1.0",
-    },
-    examples: {
-      microsoft_david:
-        'curl -X POST -H "Content-Type: application/json" -d \'{"text":"Hello, I am David","voice":"Microsoft David"}\' --output david.mp3 /api/tts-gtts',
+
+    working_examples: {
+      microsoft_zira:
+        'curl -X POST -H "Content-Type: application/json" -d \'{"text":"Hello, I am Zira","voice":"Microsoft Zira"}\' --output zira.mp3 /api/tts-gtts',
       microsoft_hazel:
         'curl -X POST -H "Content-Type: application/json" -d \'{"text":"Hello, I am Hazel","voice":"Microsoft Hazel"}\' --output hazel.mp3 /api/tts-gtts',
       microsoft_heera:
         'curl -X POST -H "Content-Type: application/json" -d \'{"text":"Hello, I am Heera","voice":"Microsoft Heera"}\' --output heera.mp3 /api/tts-gtts',
-      google_us:
-        'curl -X POST -H "Content-Type: application/json" -d \'{"text":"Hello from Google US","voice":"Google US English"}\' --output google-us.mp3 /api/tts-gtts',
-      google_uk_female:
-        'curl -X POST -H "Content-Type: application/json" -d \'{"text":"Hello from Google UK","voice":"Google UK English Female"}\' --output google-uk.mp3 /api/tts-gtts',
-      google_hindi:
-        'curl -X POST -H "Content-Type: application/json" -d \'{"text":"नमस्ते","voice":"Google हिन्दी"}\' --output hindi.mp3 /api/tts-gtts',
+      direct_language:
+        'curl -X POST -H "Content-Type: application/json" -d \'{"text":"Hello world","voice":"en-gb"}\' --output uk.mp3 /api/tts-gtts',
     },
-    n8n_examples: {
-      microsoft_zira: {
-        method: "POST",
-        url: "https://your-domain.com/api/tts-gtts",
-        body: {
-          text: "{{ $json.text }}",
-          voice: "Microsoft Zira",
-          speed: 0.9,
-        },
+
+    n8n_working_config: {
+      method: "POST",
+      url: "https://your-domain.com/api/tts-gtts",
+      body: {
+        text: "{{ $json.text }}",
+        voice: "Microsoft Zira", // Will map to 'en'
+        speed: 0.9,
       },
-      google_uk_female: {
-        method: "POST",
-        url: "https://your-domain.com/api/tts-gtts",
-        body: {
-          text: "{{ $json.text }}",
-          voice: "Google UK English Female",
-          slow: false,
-        },
-      },
-      microsoft_ravi: {
-        method: "POST",
-        url: "https://your-domain.com/api/tts-gtts",
-        body: {
-          text: "{{ $json.text }}",
-          voice: "Microsoft Ravi",
-          speed: 1.0,
-        },
-      },
+      note: "Set Response Format to 'File' in n8n HTTP Request node",
+    },
+
+    troubleshooting: {
+      if_no_audio: "Google TTS may be rate limited - try again in a few minutes",
+      if_error: "Check the response headers X-Voice-Requested and X-Voice-Used",
+      alternative: "Use /api/tts-real-voice for more reliable TTS services",
     },
   })
 }
